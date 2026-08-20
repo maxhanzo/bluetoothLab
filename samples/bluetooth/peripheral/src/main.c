@@ -8,6 +8,7 @@
 
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/gap.h>
+#include <zephyr/bluetooth/conn.h>
 #include <zephyr/bluetooth/gatt.h>
 #include <zephyr/bluetooth/uuid.h>
 
@@ -26,7 +27,7 @@ static const struct gpio_dt_spec status_led =
 	GPIO_DT_SPEC_GET(LED_NODE, gpios);
 
 /* -------------------------------------------------------------------------- */
-/* Device identity                                                            */
+/* Device Information Service                                                 */
 /* -------------------------------------------------------------------------- */
 
 #define SERIAL_RAW_LEN 16
@@ -34,7 +35,7 @@ static const struct gpio_dt_spec status_led =
 
 static char serial_number[SERIAL_STR_LEN];
 static const char hardware_revision[] = "NICE-NANO-COMPATIBLE";
-static const char firmware_revision[] = "0.1.0";
+static const char firmware_revision[] = "0.4.0";
 
 static void init_serial_number(void)
 {
@@ -66,13 +67,8 @@ static ssize_t read_serial_number(
 	uint16_t offset)
 {
 	return bt_gatt_attr_read(
-		conn,
-		attr,
-		buf,
-		len,
-		offset,
-		serial_number,
-		strlen(serial_number)
+		conn, attr, buf, len, offset,
+		serial_number, strlen(serial_number)
 	);
 }
 
@@ -84,13 +80,8 @@ static ssize_t read_hardware_revision(
 	uint16_t offset)
 {
 	return bt_gatt_attr_read(
-		conn,
-		attr,
-		buf,
-		len,
-		offset,
-		hardware_revision,
-		strlen(hardware_revision)
+		conn, attr, buf, len, offset,
+		hardware_revision, strlen(hardware_revision)
 	);
 }
 
@@ -102,17 +93,11 @@ static ssize_t read_firmware_revision(
 	uint16_t offset)
 {
 	return bt_gatt_attr_read(
-		conn,
-		attr,
-		buf,
-		len,
-		offset,
-		firmware_revision,
-		strlen(firmware_revision)
+		conn, attr, buf, len, offset,
+		firmware_revision, strlen(firmware_revision)
 	);
 }
 
-/* Standard Bluetooth Device Information Service (0x180A). */
 BT_GATT_SERVICE_DEFINE(dis_svc,
 	BT_GATT_PRIMARY_SERVICE(BT_UUID_DIS),
 
@@ -157,6 +142,29 @@ BT_GATT_SERVICE_DEFINE(dis_svc,
 #define BT_UUID_TUTORIAL_LAST_VAL \
 	BT_UUID_128_ENCODE(0x7e57a000, 0x0000, 0x4b1a, 0x9c00, 0x000000000003ULL)
 
+#define BT_UUID_TUTORIAL_OBSERVABLE_WRITE_VAL \
+	BT_UUID_128_ENCODE(0x7e57a000, 0x0000, 0x4b1a, 0x9c00, 0x000000000004ULL)
+
+#define BT_UUID_TUTORIAL_OBSERVABLE_VALUE_VAL \
+	BT_UUID_128_ENCODE(0x7e57a000, 0x0000, 0x4b1a, 0x9c00, 0x000000000005ULL)
+
+
+#define BT_UUID_TUTORIAL_WRITE_NOTIFY_VAL \
+	BT_UUID_128_ENCODE(0x7e57a000, 0x0000, 0x4b1a, 0x9c00, 0x000000000006ULL)
+
+#define BT_UUID_TUTORIAL_WRITE_NO_RSP_VAL \
+	BT_UUID_128_ENCODE(0x7e57a000, 0x0000, 0x4b1a, 0x9c00, 0x000000000007ULL)
+
+#define BT_UUID_TUTORIAL_WRITE_NO_RSP_READ_VAL \
+	BT_UUID_128_ENCODE(0x7e57a000, 0x0000, 0x4b1a, 0x9c00, 0x000000000008ULL)
+
+
+#define BT_UUID_TUTORIAL_SECURE_WRITE_VAL \
+	BT_UUID_128_ENCODE(0x7e57a000, 0x0000, 0x4b1a, 0x9c00, 0x000000000009ULL)
+
+#define BT_UUID_TUTORIAL_SECURE_STATE_VAL \
+	BT_UUID_128_ENCODE(0x7e57a000, 0x0000, 0x4b1a, 0x9c00, 0x00000000000AULL)
+
 static const struct bt_uuid_128 tutorial_service_uuid =
 	BT_UUID_INIT_128(BT_UUID_TUTORIAL_SERVICE_VAL);
 
@@ -166,11 +174,48 @@ static const struct bt_uuid_128 tutorial_write_uuid =
 static const struct bt_uuid_128 tutorial_last_uuid =
 	BT_UUID_INIT_128(BT_UUID_TUTORIAL_LAST_VAL);
 
+static const struct bt_uuid_128 tutorial_observable_write_uuid =
+	BT_UUID_INIT_128(BT_UUID_TUTORIAL_OBSERVABLE_WRITE_VAL);
+
+static const struct bt_uuid_128 tutorial_observable_value_uuid =
+	BT_UUID_INIT_128(BT_UUID_TUTORIAL_OBSERVABLE_VALUE_VAL);
+
+
+static const struct bt_uuid_128 tutorial_write_notify_uuid =
+	BT_UUID_INIT_128(BT_UUID_TUTORIAL_WRITE_NOTIFY_VAL);
+
+static const struct bt_uuid_128 tutorial_write_no_rsp_uuid =
+	BT_UUID_INIT_128(BT_UUID_TUTORIAL_WRITE_NO_RSP_VAL);
+
+static const struct bt_uuid_128 tutorial_write_no_rsp_read_uuid =
+	BT_UUID_INIT_128(BT_UUID_TUTORIAL_WRITE_NO_RSP_READ_VAL);
+
+
+static const struct bt_uuid_128 tutorial_secure_write_uuid =
+	BT_UUID_INIT_128(BT_UUID_TUTORIAL_SECURE_WRITE_VAL);
+
+static const struct bt_uuid_128 tutorial_secure_state_uuid =
+	BT_UUID_INIT_128(BT_UUID_TUTORIAL_SECURE_STATE_VAL);
+
+/* Simple WRITE -> READ-back pair: ...0002 and ...0003 */
+
 #define LAST_VALUE_MAX_LEN 64
 
 static uint8_t last_value[LAST_VALUE_MAX_LEN];
 static uint16_t last_value_len;
 static bool has_last_value;
+
+static const struct bt_gatt_attr *write_notify_attr;
+
+static void write_notify_ccc_changed(
+	const struct bt_gatt_attr *attr,
+	uint16_t value)
+{
+	printk(
+		"Write mirror notifications %s\n",
+		value == BT_GATT_CCC_NOTIFY ? "enabled" : "disabled"
+	);
+}
 
 static ssize_t write_value(
 	struct bt_conn *conn,
@@ -195,14 +240,29 @@ static ssize_t write_value(
 	printk("Write Value received %u byte(s): ", len);
 
 	for (uint16_t i = 0; i < len; i++) {
-		printk("%02X", last_value[i]);
-
-		if (i + 1U < len) {
-			printk(" ");
-		}
+		printk("%02X%s", last_value[i], (i + 1U < len) ? " " : "");
 	}
 
 	printk("\n");
+
+	/*
+	 * Mirror every successful write on ...0002 through the dedicated
+	 * NOTIFY-only characteristic ...0006 when a client is subscribed.
+	 */
+	if (write_notify_attr != NULL) {
+		int notify_err = bt_gatt_notify(
+			conn,
+			write_notify_attr,
+			last_value,
+			last_value_len
+		);
+
+		if (notify_err == 0) {
+			printk("Write mirror notification sent\n");
+		} else {
+			printk("Write mirror notification not sent (err %d)\n", notify_err);
+		}
+	}
 
 	return len;
 }
@@ -218,30 +278,307 @@ static ssize_t read_last_value(
 
 	if (!has_last_value) {
 		return bt_gatt_attr_read(
-			conn,
-			attr,
-			buf,
-			len,
-			offset,
-			not_available,
-			sizeof(not_available) - 1U
+			conn, attr, buf, len, offset,
+			not_available, sizeof(not_available) - 1U
 		);
 	}
 
 	return bt_gatt_attr_read(
-		conn,
-		attr,
-		buf,
-		len,
-		offset,
-		last_value,
-		last_value_len
+		conn, attr, buf, len, offset,
+		last_value, last_value_len
 	);
 }
+
+/* WRITE -> READ | NOTIFY pair: ...0004 and ...0005 */
+
+#define OBSERVABLE_VALUE_MAX_LEN 64
+
+static uint8_t observable_value[OBSERVABLE_VALUE_MAX_LEN];
+static uint16_t observable_value_len;
+static bool has_observable_value;
+static const struct bt_gatt_attr *observable_value_attr;
+
+static ssize_t read_observable_value(
+	struct bt_conn *conn,
+	const struct bt_gatt_attr *attr,
+	void *buf,
+	uint16_t len,
+	uint16_t offset)
+{
+	static const char not_available[] = "N/A";
+
+	if (!has_observable_value) {
+		return bt_gatt_attr_read(
+			conn, attr, buf, len, offset,
+			not_available, sizeof(not_available) - 1U
+		);
+	}
+
+	return bt_gatt_attr_read(
+		conn, attr, buf, len, offset,
+		observable_value, observable_value_len
+	);
+}
+
+static void observable_ccc_changed(
+	const struct bt_gatt_attr *attr,
+	uint16_t value)
+{
+	printk(
+		"Observable notifications %s\n",
+		value == BT_GATT_CCC_NOTIFY ? "enabled" : "disabled"
+	);
+}
+
+static ssize_t write_observable_value(
+	struct bt_conn *conn,
+	const struct bt_gatt_attr *attr,
+	const void *buf,
+	uint16_t len,
+	uint16_t offset,
+	uint8_t flags)
+{
+	int err;
+
+	if (offset != 0U) {
+		return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
+	}
+
+	if (len > OBSERVABLE_VALUE_MAX_LEN) {
+		return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+	}
+
+	memcpy(observable_value, buf, len);
+	observable_value_len = len;
+	has_observable_value = true;
+
+	printk("Observable Write received %u byte(s): ", len);
+
+	for (uint16_t i = 0; i < len; i++) {
+		printk("%02X%s", observable_value[i],
+		       (i + 1U < len) ? " " : "");
+	}
+
+	printk("\n");
+
+	/*
+	 * If the connected client subscribed to ...0005, Zephyr sends the
+	 * notification. If nobody subscribed, bt_gatt_notify() returns an error,
+	 * but the new value remains stored and is still available through READ.
+	 */
+	if (observable_value_attr != NULL) {
+		err = bt_gatt_notify(
+			conn,
+			observable_value_attr,
+			observable_value,
+			observable_value_len
+		);
+
+		if (err == 0) {
+			printk("Observable notification sent\n");
+		} else {
+			printk("Observable notification not sent (err %d)\n", err);
+		}
+	}
+
+	return len;
+}
+
+
+/* WRITE WITHOUT RESPONSE -> READ pair: ...0007 and ...0008 */
+
+#define WRITE_NO_RSP_MAX_LEN 64
+
+static uint8_t write_no_rsp_value[WRITE_NO_RSP_MAX_LEN];
+static uint16_t write_no_rsp_value_len;
+static bool has_write_no_rsp_value;
+
+static ssize_t write_without_response_value(
+	struct bt_conn *conn,
+	const struct bt_gatt_attr *attr,
+	const void *buf,
+	uint16_t len,
+	uint16_t offset,
+	uint8_t flags)
+{
+	if (!(flags & BT_GATT_WRITE_FLAG_CMD)) {
+		return BT_GATT_ERR(BT_ATT_ERR_WRITE_REQ_REJECTED);
+	}
+
+	if (offset != 0U) {
+		return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
+	}
+
+	if (len > WRITE_NO_RSP_MAX_LEN) {
+		return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+	}
+
+	memcpy(write_no_rsp_value, buf, len);
+	write_no_rsp_value_len = len;
+	has_write_no_rsp_value = true;
+
+	printk("Write Without Response received %u byte(s): ", len);
+
+	for (uint16_t i = 0; i < len; i++) {
+		printk("%02X%s", write_no_rsp_value[i],
+		       (i + 1U < len) ? " " : "");
+	}
+
+	printk("\n");
+
+	return len;
+}
+
+static ssize_t read_write_without_response_value(
+	struct bt_conn *conn,
+	const struct bt_gatt_attr *attr,
+	void *buf,
+	uint16_t len,
+	uint16_t offset)
+{
+	static const char not_available[] = "N/A";
+
+	if (!has_write_no_rsp_value) {
+		return bt_gatt_attr_read(
+			conn, attr, buf, len, offset,
+			not_available, sizeof(not_available) - 1U
+		);
+	}
+
+	return bt_gatt_attr_read(
+		conn, attr, buf, len, offset,
+		write_no_rsp_value, write_no_rsp_value_len
+	);
+}
+
+
+/* SECURE WRITE -> SECURE READ | NOTIFY pair: ...0009 and ...000A */
+
+#define SECURE_VALUE_MAX_LEN 64
+
+static uint8_t secure_value[SECURE_VALUE_MAX_LEN];
+static uint16_t secure_value_len;
+static bool has_secure_value;
+static const struct bt_gatt_attr *secure_state_attr;
+
+static ssize_t read_secure_state(
+	struct bt_conn *conn,
+	const struct bt_gatt_attr *attr,
+	void *buf,
+	uint16_t len,
+	uint16_t offset)
+{
+	static const char not_available[] = "N/A";
+
+	if (!has_secure_value) {
+		return bt_gatt_attr_read(
+			conn, attr, buf, len, offset,
+			not_available, sizeof(not_available) - 1U
+		);
+	}
+
+	return bt_gatt_attr_read(
+		conn, attr, buf, len, offset,
+		secure_value, secure_value_len
+	);
+}
+
+static void secure_ccc_changed(
+	const struct bt_gatt_attr *attr,
+	uint16_t value)
+{
+	printk(
+		"Secure notifications %s\n",
+		value == BT_GATT_CCC_NOTIFY ? "enabled" : "disabled"
+	);
+}
+
+static ssize_t write_secure_value(
+	struct bt_conn *conn,
+	const struct bt_gatt_attr *attr,
+	const void *buf,
+	uint16_t len,
+	uint16_t offset,
+	uint8_t flags)
+{
+	int err;
+
+	if (offset != 0U) {
+		return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
+	}
+
+	if (len > SECURE_VALUE_MAX_LEN) {
+		return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+	}
+
+	memcpy(secure_value, buf, len);
+	secure_value_len = len;
+	has_secure_value = true;
+
+	printk("Secure Write received %u byte(s): ", len);
+
+	for (uint16_t i = 0; i < len; i++) {
+		printk("%02X%s", secure_value[i],
+		       (i + 1U < len) ? " " : "");
+	}
+
+	printk("\n");
+
+	if (secure_state_attr != NULL) {
+		err = bt_gatt_notify(
+			conn,
+			secure_state_attr,
+			secure_value,
+			secure_value_len
+		);
+
+		if (err == 0) {
+			printk("Secure notification sent\n");
+		} else {
+			printk("Secure notification not sent (err %d)\n", err);
+		}
+	}
+
+	return len;
+}
+
+static void connected(struct bt_conn *conn, uint8_t err)
+{
+	if (err != 0U) {
+		printk("Connection failed (err 0x%02X)\n", err);
+		return;
+	}
+
+	printk("Connected. Security level: %u\n", bt_conn_get_security(conn));
+}
+
+static void disconnected(struct bt_conn *conn, uint8_t reason)
+{
+	printk("Disconnected (reason 0x%02X)\n", reason);
+}
+
+static void security_changed(
+	struct bt_conn *conn,
+	bt_security_t level,
+	enum bt_security_err err)
+{
+	if (err == BT_SECURITY_ERR_SUCCESS) {
+		printk("Security changed. New level: %u\n", level);
+	} else {
+		printk("Security change failed (level %u, err %d)\n", level, err);
+	}
+}
+
+BT_CONN_CB_DEFINE(conn_callbacks) = {
+	.connected = connected,
+	.disconnected = disconnected,
+	.security_changed = security_changed,
+};
 
 BT_GATT_SERVICE_DEFINE(tutorial_svc,
 	BT_GATT_PRIMARY_SERVICE(&tutorial_service_uuid),
 
+	/* ...0002: WRITE */
 	BT_GATT_CHARACTERISTIC(
 		&tutorial_write_uuid.uuid,
 		BT_GATT_CHRC_WRITE,
@@ -251,6 +588,7 @@ BT_GATT_SERVICE_DEFINE(tutorial_svc,
 		NULL
 	),
 
+	/* ...0003: READ */
 	BT_GATT_CHARACTERISTIC(
 		&tutorial_last_uuid.uuid,
 		BT_GATT_CHRC_READ,
@@ -258,6 +596,88 @@ BT_GATT_SERVICE_DEFINE(tutorial_svc,
 		read_last_value,
 		NULL,
 		NULL
+	),
+
+	/* ...0004: WRITE */
+	BT_GATT_CHARACTERISTIC(
+		&tutorial_observable_write_uuid.uuid,
+		BT_GATT_CHRC_WRITE,
+		BT_GATT_PERM_WRITE,
+		NULL,
+		write_observable_value,
+		NULL
+	),
+
+	/* ...0005: READ | NOTIFY */
+	BT_GATT_CHARACTERISTIC(
+		&tutorial_observable_value_uuid.uuid,
+		BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
+		BT_GATT_PERM_READ,
+		read_observable_value,
+		NULL,
+		NULL
+	),
+	BT_GATT_CCC(
+		observable_ccc_changed,
+		BT_GATT_PERM_READ | BT_GATT_PERM_WRITE
+	),
+
+	/* ...0006: NOTIFY-only mirror of writes to ...0002 */
+	BT_GATT_CHARACTERISTIC(
+		&tutorial_write_notify_uuid.uuid,
+		BT_GATT_CHRC_NOTIFY,
+		BT_GATT_PERM_NONE,
+		NULL,
+		NULL,
+		NULL
+	),
+	BT_GATT_CCC(
+		write_notify_ccc_changed,
+		BT_GATT_PERM_READ | BT_GATT_PERM_WRITE
+	),
+
+	/* ...0007: WRITE WITHOUT RESPONSE */
+	BT_GATT_CHARACTERISTIC(
+		&tutorial_write_no_rsp_uuid.uuid,
+		BT_GATT_CHRC_WRITE_WITHOUT_RESP,
+		BT_GATT_PERM_WRITE,
+		NULL,
+		write_without_response_value,
+		NULL
+	),
+
+	/* ...0008: READ last value received by ...0007 */
+	BT_GATT_CHARACTERISTIC(
+		&tutorial_write_no_rsp_read_uuid.uuid,
+		BT_GATT_CHRC_READ,
+		BT_GATT_PERM_READ,
+		read_write_without_response_value,
+		NULL,
+		NULL
+	),
+
+	/* ...0009: SECURE WRITE - requires an encrypted connection */
+	BT_GATT_CHARACTERISTIC(
+		&tutorial_secure_write_uuid.uuid,
+		BT_GATT_CHRC_WRITE,
+		BT_GATT_PERM_WRITE_ENCRYPT,
+		NULL,
+		write_secure_value,
+		NULL
+	),
+
+	/* ...000A: SECURE READ | NOTIFY - requires an encrypted connection */
+	BT_GATT_CHARACTERISTIC(
+		&tutorial_secure_state_uuid.uuid,
+		BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
+		BT_GATT_PERM_READ_ENCRYPT,
+		read_secure_state,
+		NULL,
+		NULL
+	),
+	BT_GATT_CCC(
+		secure_ccc_changed,
+		BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT
 	)
 );
 
@@ -303,11 +723,39 @@ int main(void)
 
 	init_serial_number();
 
+	/*
+	 * Attribute layout inside tutorial_svc:
+	 * 0   Primary service
+	 * 1   Characteristic declaration ...0002
+	 * 2   Characteristic value       ...0002
+	 * 3   Characteristic declaration ...0003
+	 * 4   Characteristic value       ...0003
+	 * 5   Characteristic declaration ...0004
+	 * 6   Characteristic value       ...0004
+	 * 7   Characteristic declaration ...0005
+	 * 8   Characteristic value       ...0005
+	 * 9   CCCD                       ...0005
+	 * 10  Characteristic declaration ...0006
+	 * 11  Characteristic value       ...0006
+	 * 12  CCCD                       ...0006
+	 * 13  Characteristic declaration ...0007
+	 * 14  Characteristic value       ...0007
+	 * 15  Characteristic declaration ...0008
+	 * 16  Characteristic value       ...0008
+	 * 17  Characteristic declaration ...0009
+	 * 18  Characteristic value       ...0009
+	 * 19  Characteristic declaration ...000A
+	 * 20  Characteristic value       ...000A
+	 * 21  CCCD                       ...000A
+	 */
+	observable_value_attr = &tutorial_svc.attrs[8];
+	write_notify_attr = &tutorial_svc.attrs[11];
+	secure_state_attr = &tutorial_svc.attrs[20];
+
 	printk("\nBLE Tutorial starting...\n");
 	printk("Serial Number: %s\n", serial_number);
 	printk("Hardware Revision: %s\n", hardware_revision);
 	printk("Firmware Revision: %s\n", firmware_revision);
-
 	printk("Calling bt_enable()...\n");
 
 	err = bt_enable(NULL);
