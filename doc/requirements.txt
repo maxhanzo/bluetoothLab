@@ -144,8 +144,8 @@ docutils==0.22.4 \
     #   sphinx-tabs
     #   sphinx-togglebutton
     #   sphinxcontrib-programoutput
-doxmlparser==1.17.0 \
-    --hash=sha256:376b12f43ee037fb98f471512e257ba022245829940532019241f17be5a93b24
+doxmlparser==1.18.0 \
+    --hash=sha256:ade561ed7153a53b6f4f7c20d4d66d774e40a3a14170b4d3b700b191e5248865
     # via -r requirements.in
 h11==0.16.0 \
     --hash=sha256:4e35b956cf45792e4caa5885e69fba00bdbc6ffafbfa020300e549b208ee5ff1 \
