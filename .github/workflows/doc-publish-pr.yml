@@ -44,7 +44,7 @@ jobs:
     - name: Check PR number
       if: steps.download-artifacts.outputs.found_artifact == 'true'
       id: check-pr
-      uses: carpentries/actions/check-valid-pr@fa5cbc13e070631ea381ad87388f5dc470f14363 # v0.18.0
+      uses: carpentries/actions/check-valid-pr@69a37a60539e718cdfae0699933db5c31bd1d654 # v1.0.0
       with:
         pr: ${{ env.PR_NUM }}
         sha: ${{ github.event.workflow_run.head_sha }}
