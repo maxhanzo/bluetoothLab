@@ -5,6 +5,7 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/hwinfo.h>
 #include <zephyr/sys/printk.h>
+#include <zephyr/settings/settings.h>
 
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/gap.h>
@@ -35,7 +36,7 @@ static const struct gpio_dt_spec status_led =
 
 static char serial_number[SERIAL_STR_LEN];
 static const char hardware_revision[] = "NICE-NANO-COMPATIBLE";
-static const char firmware_revision[] = "0.4.0";
+static const char firmware_revision[] = "0.5.1";
 
 static void init_serial_number(void)
 {
@@ -205,16 +206,84 @@ static uint8_t last_value[LAST_VALUE_MAX_LEN];
 static uint16_t last_value_len;
 static bool has_last_value;
 
-static const struct bt_gatt_attr *write_notify_attr;
+static const struct bt_gatt_attr *periodic_notify_attr;
+
+static bool periodic_notify_enabled;
+static uint8_t periodic_notify_counter;
+
+static void periodic_notify_work_handler(struct k_work *work);
+
+K_WORK_DELAYABLE_DEFINE(
+	periodic_notify_work,
+	periodic_notify_work_handler
+);
+
+static void periodic_notify_work_handler(struct k_work *work)
+{
+	int err;
+
+	if (!periodic_notify_enabled || periodic_notify_attr == NULL) {
+		return;
+	}
+
+	/*
+	 * This characteristic represents an event stream rather than persistent
+	 * state. Every two seconds a new one-byte event is generated.
+	 *
+	 * The counter naturally wraps from 0xFF back to 0x00.
+	 */
+	periodic_notify_counter++;
+
+	err = bt_gatt_notify(
+		NULL,
+		periodic_notify_attr,
+		&periodic_notify_counter,
+		sizeof(periodic_notify_counter)
+	);
+
+	if (err == 0) {
+		printk(
+			"Periodic event notification sent: %02X\n",
+			periodic_notify_counter
+		);
+	} else {
+		printk(
+			"Periodic event notification failed: %d\n",
+			err
+		);
+	}
+
+	if (periodic_notify_enabled) {
+		k_work_reschedule(
+			&periodic_notify_work,
+			K_SECONDS(2)
+		);
+	}
+}
 
 static void write_notify_ccc_changed(
 	const struct bt_gatt_attr *attr,
 	uint16_t value)
 {
-	printk(
-		"Write mirror notifications %s\n",
-		value == BT_GATT_CCC_NOTIFY ? "enabled" : "disabled"
-	);
+	periodic_notify_enabled = (value == BT_GATT_CCC_NOTIFY);
+
+	if (periodic_notify_enabled) {
+		/*
+		 * Start a fresh sequence for each subscription.
+		 * First notification will be 0x01 after two seconds.
+		 */
+		periodic_notify_counter = 0U;
+
+		printk("Periodic event notifications enabled\n");
+
+		k_work_reschedule(
+			&periodic_notify_work,
+			K_SECONDS(2)
+		);
+	} else {
+		printk("Periodic event notifications disabled\n");
+		k_work_cancel_delayable(&periodic_notify_work);
+	}
 }
 
 static ssize_t write_value(
@@ -244,26 +313,6 @@ static ssize_t write_value(
 	}
 
 	printk("\n");
-
-	/*
-	 * Mirror every successful write on ...0002 through the dedicated
-	 * NOTIFY-only characteristic ...0006 when a client is subscribed.
-	 */
-	if (write_notify_attr != NULL) {
-		int notify_err = bt_gatt_notify(
-			conn,
-			write_notify_attr,
-			last_value,
-			last_value_len
-		);
-
-		if (notify_err == 0) {
-			printk("Write mirror notification sent\n");
-		} else {
-			printk("Write mirror notification not sent (err %d)\n", notify_err);
-		}
-	}
-
 	return len;
 }
 
@@ -542,6 +591,8 @@ static ssize_t write_secure_value(
 	return len;
 }
 
+static int start_advertising(void);
+
 static void connected(struct bt_conn *conn, uint8_t err)
 {
 	if (err != 0U) {
@@ -555,6 +606,19 @@ static void connected(struct bt_conn *conn, uint8_t err)
 static void disconnected(struct bt_conn *conn, uint8_t reason)
 {
 	printk("Disconnected (reason 0x%02X)\n", reason);
+	printk("Waiting for connection object to be recycled before advertising again...\n");
+}
+
+static void recycled(void)
+{
+	int err;
+
+	printk("Connection recycled. Restarting advertising...\n");
+
+	err = start_advertising();
+	if (err != 0) {
+		printk("Advertising restart failed: %d\n", err);
+	}
 }
 
 static void security_changed(
@@ -569,10 +633,65 @@ static void security_changed(
 	}
 }
 
+
+static void pairing_complete(struct bt_conn *conn, bool bonded)
+{
+	printk("Pairing complete. Bonded: %s\n", bonded ? "yes" : "no");
+}
+
+static void pairing_failed(
+	struct bt_conn *conn,
+	enum bt_security_err reason)
+{
+	printk("Pairing failed (reason %d)\n", reason);
+}
+
+static void bond_deleted(uint8_t id, const bt_addr_le_t *peer)
+{
+	char addr[BT_ADDR_LE_STR_LEN];
+
+	bt_addr_le_to_str(peer, addr, sizeof(addr));
+	printk("Bond deleted: %s (local id %u)\n", addr, id);
+}
+
+static struct bt_conn_auth_info_cb auth_info_callbacks = {
+	.pairing_complete = pairing_complete,
+	.pairing_failed = pairing_failed,
+	.bond_deleted = bond_deleted,
+};
+
+static void print_bond(
+	const struct bt_bond_info *info,
+	void *user_data)
+{
+	int *count = user_data;
+	char addr[BT_ADDR_LE_STR_LEN];
+
+	bt_addr_le_to_str(&info->addr, addr, sizeof(addr));
+
+	(*count)++;
+	printk("  Bond %d: %s\n", *count, addr);
+}
+
+static void print_stored_bonds(void)
+{
+	int count = 0;
+
+	printk("Stored bonds:\n");
+	bt_foreach_bond(BT_ID_DEFAULT, print_bond, &count);
+
+	if (count == 0) {
+		printk("  (none)\n");
+	} else {
+		printk("Total stored bonds: %d\n", count);
+	}
+}
+
 BT_CONN_CB_DEFINE(conn_callbacks) = {
 	.connected = connected,
 	.disconnected = disconnected,
 	.security_changed = security_changed,
+	.recycled = recycled,
 };
 
 BT_GATT_SERVICE_DEFINE(tutorial_svc,
@@ -622,7 +741,7 @@ BT_GATT_SERVICE_DEFINE(tutorial_svc,
 		BT_GATT_PERM_READ | BT_GATT_PERM_WRITE
 	),
 
-	/* ...0006: NOTIFY-only mirror of writes to ...0002 */
+	/* ...0006: NOTIFY-only periodic event stream (one byte every 2 seconds) */
 	BT_GATT_CHARACTERISTIC(
 		&tutorial_write_notify_uuid.uuid,
 		BT_GATT_CHRC_NOTIFY,
@@ -700,6 +819,28 @@ static const struct bt_data sd[] = {
 	),
 };
 
+static int start_advertising(void)
+{
+	int err;
+
+	err = bt_le_adv_start(
+		BT_LE_ADV_CONN_FAST_1,
+		ad,
+		ARRAY_SIZE(ad),
+		sd,
+		ARRAY_SIZE(sd)
+	);
+
+	if (err != 0) {
+		printk("Advertising failed: %d\n", err);
+		return err;
+	}
+
+	printk("Advertising started. Look for: %s\n", CONFIG_BT_DEVICE_NAME);
+	return 0;
+}
+
+
 /* -------------------------------------------------------------------------- */
 /* Main                                                                       */
 /* -------------------------------------------------------------------------- */
@@ -749,7 +890,7 @@ int main(void)
 	 * 21  CCCD                       ...000A
 	 */
 	observable_value_attr = &tutorial_svc.attrs[8];
-	write_notify_attr = &tutorial_svc.attrs[11];
+	periodic_notify_attr = &tutorial_svc.attrs[11];
 	secure_state_attr = &tutorial_svc.attrs[20];
 
 	printk("\nBLE Tutorial starting...\n");
@@ -770,27 +911,34 @@ int main(void)
 	}
 
 	printk("Bluetooth initialized successfully.\n");
+
+	printk("Loading stored Bluetooth settings...\n");
+
+	err = settings_load();
+	if (err != 0) {
+		printk("settings_load() failed: %d\n", err);
+		return 0;
+	}
+
+	printk("Bluetooth settings loaded successfully.\n");
+
+	err = bt_conn_auth_info_cb_register(&auth_info_callbacks);
+	if (err != 0) {
+		printk("Auth info callback registration failed: %d\n", err);
+		return 0;
+	}
+
+	print_stored_bonds();
+
 	printk("Starting advertising...\n");
 
-	err = bt_le_adv_start(
-		BT_LE_ADV_CONN_FAST_1,
-		ad,
-		ARRAY_SIZE(ad),
-		sd,
-		ARRAY_SIZE(sd)
-	);
-
+	err = start_advertising();
 	if (err != 0) {
-		printk("Advertising failed: %d\n", err);
-
 		while (1) {
 			gpio_pin_toggle_dt(&status_led);
 			k_sleep(K_MSEC(200));
 		}
 	}
-
-	printk("Advertising successfully started.\n");
-	printk("Look for: %s\n", CONFIG_BT_DEVICE_NAME);
 
 	gpio_pin_set_dt(&status_led, 1);
 
